@@ -53,6 +53,7 @@ class ResolvedInstance:
     base_url: str
     status: Mapping[str, Any] = field(default_factory=dict)
     document_title: str = "Unknown"
+    revit_version: str = "Unknown"
     health: str = "healthy"
 
     def as_dict(self) -> Dict[str, Any]:
@@ -65,6 +66,7 @@ class ResolvedInstance:
             "healthy": True,
             "health": self.health,
             "document_title": self.document_title,
+            "revit_version": self.revit_version,
             "status": dict(self.status),
         }
 
@@ -323,6 +325,13 @@ def _document_title(status: Mapping[str, Any]) -> str:
     return "Unknown"
 
 
+def _revit_version(status: Mapping[str, Any]) -> str:
+    version = status.get("revit_version")
+    if version:
+        return str(version)
+    return "Unknown"
+
+
 async def _response_json(response: Any) -> Any:
     payload = response.json()
     if inspect.isawaitable(payload):
@@ -453,6 +462,7 @@ async def discover_snapshot(
                     base_url=_base_url(port),
                     status=status,
                     document_title=_document_title(status),
+                    revit_version=_revit_version(status),
                     health=str(status.get("health", "healthy")),
                 )
             )
@@ -488,10 +498,11 @@ def format_instance_mapping(instances: Sequence[ResolvedInstance]) -> str:
     if not instances:
         return "(none)"
     return "; ".join(
-        "{} / {} (port {}, document '{}')".format(
+        "{} / {} (port {}, {}, document '{}')".format(
             instance.selector,
             instance.numeric_alias,
             instance.port,
+            instance.revit_version,
             instance.document_title,
         )
         for instance in instances
