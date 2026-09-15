@@ -2,6 +2,11 @@
 """Utility functions for MCP tools"""
 
 
+def routing_kwargs(instance):
+    """Preserve legacy transport calls while forwarding explicit selectors."""
+    return {} if instance is None else {"instance": instance}
+
+
 def format_response(response):
     """Helper function to format API responses consistently for MCP tools.
 

@@ -145,7 +145,7 @@ async def _wait_for_revit_ready(revit_get, ctx, timeout, poll_interval=5):
     return False, None
 
 
-def register_launch_tools(mcp, revit_get):
+def register_launch_tools(mcp, revit_get, readiness_get=None):
     """Register Revit launch and discovery tools with the MCP server."""
 
     @mcp.tool()
@@ -289,7 +289,7 @@ def register_launch_tools(mcp, revit_get):
 
         # Poll for readiness
         ready, status_response = await _wait_for_revit_ready(
-            revit_get, ctx, timeout
+            readiness_get or revit_get, ctx, timeout
         )
 
         result = {
