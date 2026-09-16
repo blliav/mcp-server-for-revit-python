@@ -22,7 +22,12 @@ def register_status_routes(api):
         """
         try:
             from pyrevit import revit
-            
+
+            try:
+                revit_version = revit.HOST_APP.pretty_name
+            except Exception:
+                revit_version = None
+
             doc = revit.doc
             if doc:
                 return routes.make_response(data={
@@ -30,6 +35,7 @@ def register_status_routes(api):
                     "health": "healthy",
                     "revit_available": True,
                     "document_title": doc.Title if doc.Title else "Untitled",
+                    "revit_version": revit_version,
                     "api_name": "revit_mcp"
                 })
             else:
@@ -37,6 +43,7 @@ def register_status_routes(api):
                     "status": "unhealthy", 
                     "revit_available": False,
                     "error": "No active Revit document",
+                    "revit_version": revit_version,
                     "api_name": "revit_mcp"
                 }, status=503)
                 
@@ -46,6 +53,7 @@ def register_status_routes(api):
                 "status": "unhealthy",
                 "revit_available": False, 
                 "error": str(e),
+                "revit_version": None,
                 "api_name": "revit_mcp"
             }, status=503)
     

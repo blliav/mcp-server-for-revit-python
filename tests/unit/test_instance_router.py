@@ -11,6 +11,7 @@ from tools.instance_router import (
     ResolvedInstance,
     alphabetic_label,
     discover_snapshot,
+    format_instance_mapping,
     normalize_selector,
     normalize_sibling_endpoint,
     parse_sibling_response,
@@ -46,13 +47,14 @@ class FakeClient:
         raise RuntimeError("unexpected URL: {}".format(url))
 
 
-def _healthy(title):
+def _healthy(title, version="Revit 2025"):
     return FakeResponse(
         payload={
             "status": "active",
             "health": "healthy",
             "revit_available": True,
             "document_title": title,
+            "revit_version": version,
         }
     )
 
@@ -66,6 +68,7 @@ def _snapshot(*ports):
             base_url="http://127.0.0.1:{}/revit_mcp".format(port),
             status={"status": "active", "health": "healthy"},
             document_title="Model {}".format(index),
+            revit_version="Revit 2026",
         )
         for index, port in enumerate(sorted(ports), start=1)
     )
@@ -150,6 +153,16 @@ async def test_discovery_merges_siblings_and_keeps_malformed_bootstrap_visible()
         ("B", "2", 48885),
         ("C", "3", 48886),
     ]
+    assert [item.revit_version for item in snapshot.instances] == [
+        "Revit 2025",
+        "Revit 2025",
+        "Revit 2025",
+    ]
+    assert [item.as_dict()["revit_version"] for item in snapshot.instances] == [
+        "Revit 2025",
+        "Revit 2025",
+        "Revit 2025",
+    ]
     assert snapshot.malformed_ports == (48884,)
     assert snapshot.unavailable_ports == (48886,)
     assert any(url.endswith("/routes/sisters") for url in client.urls)
@@ -215,6 +228,37 @@ async def test_resolve_discovers_for_each_request(monkeypatch):
     await resolve_instance()
 
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_missing_revit_version_defaults_to_unknown():
+    client = FakeClient(
+        [
+            ("http://127.0.0.1:48884/routes/sisters", FakeResponse(payload=[48884])),
+            (
+                "http://127.0.0.1:48884/revit_mcp/status/",
+                FakeResponse(
+                    payload={
+                        "status": "active",
+                        "health": "healthy",
+                        "revit_available": True,
+                        "document_title": "Legacy.rvt",
+                    }
+                ),
+            ),
+        ]
+    )
+
+    snapshot = await discover_snapshot(ports=[48884], client=client)
+
+    assert snapshot.instances[0].document_title == "Legacy.rvt"
+    assert snapshot.instances[0].revit_version == "Unknown"
+
+
+def test_mapping_format_includes_revit_version():
+    mapped = format_instance_mapping(list(_snapshot(48884, 48885).instances))
+    assert "port 48884, Revit 2026, document 'Model 1'" in mapped
+    assert "Revit 2026" in mapped
 
 
 @pytest.mark.asyncio

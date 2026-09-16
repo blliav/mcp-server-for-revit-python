@@ -33,9 +33,11 @@ async def _log_routing(ctx: Context, resolved_instance) -> None:
         return
     try:
         await info(
-            "Routing request to Revit {} (port {}, document '{}').".format(
+            "Routing request to Revit {} / {} (port {}, {}, document '{}').".format(
                 resolved_instance.selector,
+                resolved_instance.numeric_alias,
                 resolved_instance.port,
+                resolved_instance.revit_version,
                 resolved_instance.document_title,
             )
         )
