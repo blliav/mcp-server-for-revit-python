@@ -20,7 +20,13 @@ DISCOVERY_HOST = "127.0.0.1"
 DISCOVERY_PORT_START = 48884
 DISCOVERY_PORT_END = 48890
 DISCOVERY_PORTS = tuple(range(DISCOVERY_PORT_START, DISCOVERY_PORT_END + 1))
-DISCOVERY_TIMEOUT = 2.0
+DISCOVERY_RANGE_SIZE = DISCOVERY_PORT_END - DISCOVERY_PORT_START + 1
+DISCOVERY_TIMEOUT = 1.0
+# Dead loopback ports drop SYNs instead of refusing them, so a full-range scan
+# would otherwise burn the whole request timeout on each dead port. Bounding
+# only the connect phase keeps the scan cheap while leaving live servers the
+# full DISCOVERY_TIMEOUT to answer.
+CONNECT_TIMEOUT = 0.1
 SISTERS_ENDPOINT = "/routes/sisters"
 STATUS_ENDPOINT = "/revit_mcp/status/"
 REVIT_MCP_PREFIX = "/revit_mcp"
@@ -111,6 +117,41 @@ index_to_label = alphabetic_label
 label_for_index = alphabetic_label
 
 
+def _in_scan_range(port: int) -> bool:
+    return DISCOVERY_PORT_START <= port <= DISCOVERY_PORT_END
+
+
+def port_label_index(port: Any, out_of_range_ports: Sequence[int] = ()) -> int:
+    """Return the stable one-based selector index for one healthy port.
+
+    In-range Routes ports map to a fixed slot, so port 48884 is always ``A`` and
+    closing a lower instance never renumbers the ones above it. Ports outside
+    the scan range have no fixed slot, so they are labeled after the range in
+    ascending port order, which keeps them distinct from every slot label.
+    """
+    normalized = _normalise_sibling_port(port)
+    if normalized is None:
+        raise ValueError("Instance labels require a valid local port")
+
+    if _in_scan_range(normalized):
+        return normalized - DISCOVERY_PORT_START + 1
+
+    ordered = sorted(
+        {
+            candidate
+            for candidate in (
+                _normalise_sibling_port(item) for item in out_of_range_ports
+            )
+            if candidate is not None and not _in_scan_range(candidate)
+        }
+    )
+    try:
+        offset = ordered.index(normalized)
+    except ValueError:
+        offset = len(ordered)
+    return DISCOVERY_RANGE_SIZE + offset + 1
+
+
 def _alphabetic_index(label: str) -> int:
     value = 0
     for character in label:
@@ -155,7 +196,14 @@ def _normalise_host(host: Any, default_host: str = DISCOVERY_HOST) -> Optional[s
     return DISCOVERY_HOST
 
 
-def _normalise_port(port: Any) -> Optional[int]:
+def _normalise_sibling_port(port: Any) -> Optional[int]:
+    """Accept any valid local port reported by the sibling registry.
+
+    Unlike ``_normalise_port`` this is not bounded to the configured Routes
+    scan range: ``/routes/sisters`` can legitimately report an instance on any
+    port, and the only safety requirement is that the port itself is a valid
+    local port number.
+    """
     if isinstance(port, bool):
         return None
     try:
@@ -163,6 +211,16 @@ def _normalise_port(port: Any) -> Optional[int]:
             return None
         value = int(str(port).strip())
     except (TypeError, ValueError):
+        return None
+    if not 1 <= value <= 65535:
+        return None
+    return value
+
+
+def _normalise_port(port: Any) -> Optional[int]:
+    """Normalize a port for the bounded direct-probe scan only."""
+    value = _normalise_sibling_port(port)
+    if value is None:
         return None
     if not DISCOVERY_PORT_START <= value <= DISCOVERY_PORT_END:
         return None
@@ -176,7 +234,7 @@ def _endpoint_from_url(value: str, default_host: str) -> Optional[Tuple[str, int
 
     # A bare port is a valid sibling representation.
     if _NUMERIC_SELECTOR.match(text):
-        port = _normalise_port(text)
+        port = _normalise_sibling_port(text)
         return (DISCOVERY_HOST, port) if port is not None else None
 
     candidate = text
@@ -185,7 +243,7 @@ def _endpoint_from_url(value: str, default_host: str) -> Optional[Tuple[str, int
     try:
         parsed = urlparse(candidate)
         host = _normalise_host(parsed.hostname, default_host)
-        port = _normalise_port(parsed.port)
+        port = _normalise_sibling_port(parsed.port)
     except (TypeError, ValueError):
         return None
     if host is None or port is None:
@@ -200,7 +258,7 @@ def normalize_sibling_endpoint(
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        port = _normalise_port(value)
+        port = _normalise_sibling_port(value)
         return (DISCOVERY_HOST, port) if port is not None else None
     if isinstance(value, str):
         return _endpoint_from_url(value, default_host)
@@ -225,7 +283,7 @@ def normalize_sibling_endpoint(
     for key in ("server_port", "port", "routes_port"):
         if key in value:
             normalized_host = _normalise_host(host, default_host)
-            normalized_port = _normalise_port(value[key])
+            normalized_port = _normalise_sibling_port(value[key])
             if normalized_host is not None and normalized_port is not None:
                 return normalized_host, normalized_port
 
@@ -339,6 +397,31 @@ async def _response_json(response: Any) -> Any:
     return payload
 
 
+async def _parse_sisters_response(
+    response: Any, bootstrap_port: int, default_host: str
+) -> Tuple[List[int], Optional[str]]:
+    """Parse a sisters response into candidate ports plus an issue kind.
+
+    A responding Routes server is itself a candidate even when its sibling
+    cache is stale or malformed, so the bootstrap port is always seeded on an
+    HTTP 200.
+    """
+    if getattr(response, "status_code", None) != 200:
+        return [], "unavailable: HTTP {}".format(
+            getattr(response, "status_code", "unknown")
+        )
+
+    candidates = {bootstrap_port}
+    try:
+        payload = await _response_json(response)
+        candidates.update(parse_sibling_response(payload, default_host))
+        return sorted(candidates), None
+    except Exception as exc:
+        return sorted(candidates), "malformed: {}".format(
+            str(exc) or type(exc).__name__
+        )
+
+
 async def _fetch_sister_ports(
     client: Any, bootstrap_port: int, default_host: str
 ) -> Tuple[int, List[int], Optional[str]]:
@@ -348,23 +431,10 @@ async def _fetch_sister_ports(
         response = await client.get(url)
     except Exception as exc:
         return bootstrap_port, [], "unavailable: {}".format(str(exc) or type(exc).__name__)
-
-    if getattr(response, "status_code", None) != 200:
-        return bootstrap_port, [], "unavailable: HTTP {}".format(
-            getattr(response, "status_code", "unknown")
-        )
-
-    # A responding Routes server is itself a candidate even if its sibling
-    # cache is stale or malformed.
-    candidates = {bootstrap_port}
-    try:
-        payload = await _response_json(response)
-        candidates.update(parse_sibling_response(payload, default_host))
-        return bootstrap_port, sorted(candidates), None
-    except Exception as exc:
-        return bootstrap_port, sorted(candidates), "malformed: {}".format(
-            str(exc) or type(exc).__name__
-        )
+    candidates, issue = await _parse_sisters_response(
+        response, bootstrap_port, default_host
+    )
+    return bootstrap_port, candidates, issue
 
 
 async def _fetch_status(
@@ -389,6 +459,46 @@ async def _fetch_status(
     return port, payload, None
 
 
+async def _scan_status(
+    client: Any, ports: Sequence[int]
+) -> Dict[int, Tuple[Optional[Dict[str, Any]], Optional[str]]]:
+    """Status-probe every scan port concurrently and cache the results.
+
+    The direct probe is the ground truth for in-range instances: any port that
+    answers the ``/revit_mcp/status/`` contract is found here regardless of what
+    the ``/routes/sisters`` registry reports. Returns {port: (payload, issue)}.
+    """
+    results = await asyncio.gather(*(_fetch_status(client, port) for port in ports))
+    return {port: (payload, issue) for port, payload, issue in results}
+
+
+def _select_registry_responder(
+    status_cache: Dict[int, Tuple[Optional[Dict[str, Any]], Optional[str]]],
+    scan_ports: Sequence[int],
+) -> Optional[int]:
+    """Pick one in-range port to serve the single ``/routes/sisters`` call.
+
+    A healthy port is preferred because its registry view is the most reliable.
+    When none is healthy the lowest port that still answered is used, so a
+    registry read never has to trust the first port blindly. Returns ``None``
+    when no in-range port answered at all.
+    """
+    healthy = [
+        port
+        for port in scan_ports
+        if status_cache.get(port, (None, None))[0] is not None
+    ]
+    if healthy:
+        return min(healthy)
+    responded = [
+        port
+        for port in scan_ports
+        if status_cache.get(port, (None, None))[1] is not None
+        and not status_cache[port][1].startswith("unavailable")
+    ]
+    return min(responded) if responded else None
+
+
 async def discover_snapshot(
     host: str = DISCOVERY_HOST,
     ports: Optional[Iterable[int]] = None,
@@ -397,8 +507,13 @@ async def discover_snapshot(
 ) -> DiscoverySnapshot:
     """Discover and label healthy Revit instances for one request.
 
-    ``client`` is injectable for unit tests. When omitted, this function owns
-    and closes an ``httpx.AsyncClient``. No result is cached between calls.
+    Every in-range port is status-probed directly and concurrently, so healthy
+    in-range instances are found independently of the ``/routes/sisters``
+    registry; an unhealthy or incomplete registry view cannot hide them. A
+    single ``/routes/sisters`` call on one in-range responder then augments the
+    snapshot with registered ports outside the scan range. ``client`` is
+    injectable for unit tests. When omitted, this function owns and closes an
+    ``httpx.AsyncClient``. No result is cached between calls.
     """
     normalized_host = _normalise_host(host, DISCOVERY_HOST)
     if normalized_host is None:
@@ -418,45 +533,74 @@ async def discover_snapshot(
     )
 
     async def run(active_client: Any) -> DiscoverySnapshot:
-        sister_results = await asyncio.gather(
-            *(
-                _fetch_sister_ports(active_client, port, normalized_host)
-                for port in scan_ports
+        status_cache = await _scan_status(active_client, scan_ports)
+
+        candidates = set(scan_ports)
+
+        # One registry read augments the direct scan with ports outside the
+        # configured range. It is additive only: a stale or incomplete registry
+        # view can never remove or hide an instance that answered its own
+        # status probe. Registered ports that the direct scan could not reach
+        # are retried once, because a registry entry is evidence of liveness.
+        responder = _select_registry_responder(status_cache, scan_ports)
+        if responder is not None:
+            _, registered_ports, issue = await _fetch_sister_ports(
+                active_client, responder, normalized_host
             )
-        )
+            if issue is None:
+                retry_ports = []
+                for port in registered_ports:
+                    payload, port_issue = status_cache.get(port, (None, None))
+                    if payload is not None:
+                        continue
+                    if port_issue is None or port_issue.startswith("unavailable"):
+                        retry_ports.append(port)
+                if retry_ports:
+                    results = await asyncio.gather(
+                        *(
+                            _fetch_status(active_client, port)
+                            for port in sorted(retry_ports)
+                        )
+                    )
+                    for port, payload, ext_issue in results:
+                        status_cache[port] = (payload, ext_issue)
+                        candidates.add(port)
 
-        candidates = set()
-        unavailable = set()
-        malformed = set()
-        for bootstrap_port, candidate_ports, issue in sister_results:
-            candidates.update(candidate_ports)
-            if issue:
-                if issue.startswith("malformed"):
-                    malformed.add(bootstrap_port)
-                else:
-                    unavailable.add(bootstrap_port)
-
-        status_results = await asyncio.gather(
-            *(_fetch_status(active_client, port) for port in sorted(candidates))
-        )
         healthy = []
         rejected = []
-        for port, status, issue in status_results:
-            if status is not None:
-                healthy.append((port, status))
+        unavailable = set()
+        malformed = set()
+        for port in sorted(candidates):
+            payload, issue = status_cache.get(port, (None, None))
+            if payload is not None:
+                healthy.append((port, payload))
             elif issue:
                 if issue.startswith("unavailable"):
                     unavailable.add(port)
-                elif issue.startswith("malformed"):
-                    malformed.add(port)
-                rejected.append("{} ({})".format(port, issue))
+                else:
+                    if issue.startswith("malformed"):
+                        malformed.add(port)
+                    rejected.append("{} ({})".format(port, issue))
 
         resolved_instances = []
-        for index, (port, status) in enumerate(sorted(healthy), start=1):
-            selector = alphabetic_label(index)
+        healthy_status = {port: status for port, status in healthy}
+        healthy_ports = sorted(healthy_status)
+        # Labels are anchored to the Routes port instead of the current position
+        # in this snapshot, so an instance keeps its selector while other
+        # instances start or close. Gaps are expected: with 48884 closed, the
+        # next instance is still labeled B.
+        out_of_range_ports = tuple(
+            port for port in healthy_ports if not _in_scan_range(port)
+        )
+        for port in sorted(
+            healthy_ports,
+            key=lambda item: port_label_index(item, out_of_range_ports),
+        ):
+            status = healthy_status[port]
+            index = port_label_index(port, out_of_range_ports)
             resolved_instances.append(
                 ResolvedInstance(
-                    selector=selector,
+                    selector=alphabetic_label(index),
                     numeric_alias=str(index),
                     port=port,
                     base_url=_base_url(port),
@@ -478,7 +622,9 @@ async def discover_snapshot(
     if client is not None:
         return await run(client)
 
-    async with httpx.AsyncClient(timeout=timeout) as active_client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT)
+    ) as active_client:
         return await run(active_client)
 
 
@@ -519,13 +665,21 @@ async def resolve_instance(
     mapping = format_instance_mapping(instances)
 
     if not instances:
-        raise InstanceRoutingError(
+        message = (
             "No healthy Revit instances found. pyRevit Routes was not found "
             "on 127.0.0.1 ports {}-{}.".format(
                 DISCOVERY_PORT_START, DISCOVERY_PORT_END
-            ),
-            current,
+            )
         )
+        if current.scanned_ports:
+            message += " Scanned ports: {}.".format(
+                ", ".join(str(port) for port in current.scanned_ports)
+            )
+        if current.unavailable_ports:
+            message += " Unavailable ports: {}.".format(
+                ", ".join(str(port) for port in current.unavailable_ports)
+            )
+        raise InstanceRoutingError(message, current)
 
     try:
         normalized = normalize_selector(instance)
@@ -536,7 +690,7 @@ async def resolve_instance(
         if len(instances) == 1:
             return instances[0]
         raise InstanceRoutingError(
-            "Multiple Revit instances are active; specify instance A/B/C/... "
+            "Multiple Revit instances are active; specify which instance to use. "
             "Available instances: {}. Call list_revit_instances first if needed.".format(
                 mapping
             ),
@@ -564,12 +718,15 @@ def register_instance_tools(mcp: Any) -> None:
 
     @mcp.tool()
     async def list_revit_instances(ctx: Context = None) -> str:
-        """List currently healthy Revit instances and their dynamic selectors.
+        """List currently healthy Revit instances and their stable selectors.
 
-        Canonical selectors are assigned by ascending Routes port for this
-        discovery snapshot. They are intentionally dynamic and may change when
-        Revit instances start or close. Use the returned selector (for example
-        ``A`` or ``B``) in the ``instance`` argument of Revit-facing tools.
+        Selectors are anchored to the Routes port: 48884 is always ``A``, 48885
+        is always ``B``, and so on, with numeric aliases ``1``, ``2``, ... Ports
+        outside the configured scan range are labeled after the range. A
+        selector therefore keeps referring to the same Revit instance even when
+        other instances start or close, and a listed label may have a gap above
+        it (for example only B and C when the instance on 48884 is closed). Use
+        the returned selector in the ``instance`` argument of Revit-facing tools.
         """
         try:
             snapshot = await discover_snapshot()
@@ -577,10 +734,11 @@ def register_instance_tools(mcp: Any) -> None:
                 "status": "success",
                 "instances": [item.as_dict() for item in snapshot.instances],
                 "count": len(snapshot.instances),
-                "labels_dynamic": True,
+                "labels_dynamic": False,
+                "selectors_stable": True,
                 "message": (
-                    "Selectors are assigned by current port order and may change "
-                    "after an instance starts or closes."
+                    "Selectors are anchored to the Routes port and stay stable "
+                    "when other instances start or close."
                 ),
                 "discovery": snapshot.as_dict(),
             }
