@@ -1,7 +1,5 @@
 """Keep public tool descriptions and local consent checks consistent."""
-from functools import wraps
 from mcp.types import ToolAnnotations
-from revit_mcp.pairing import get_token, PairingError
 from .catalog import TOOL_DESCRIPTIONS
 
 READ_ONLY = {
@@ -18,14 +16,6 @@ class ReviewedTools:
 
     def tool(self, **kwargs):
         def register(function):
-            @wraps(function)
-            async def paired_tool(*args, **arguments):
-                try:
-                    get_token()
-                except PairingError as error:
-                    return "Error: " + str(error)
-                return await function(*args, **arguments)
-
             name = function.__name__
             kwargs["description"] = TOOL_DESCRIPTIONS[name]
             kwargs["annotations"] = ToolAnnotations(
@@ -34,5 +24,5 @@ class ReviewedTools:
                 openWorldHint=name in {"execute_revit_code", "sync_with_central",
                                        "open_document", "save_document", "launch_revit"},
             )
-            return self.server.tool(**kwargs)(paired_tool)
+            return self.server.tool(**kwargs)(function)
         return register

@@ -12,8 +12,6 @@ from urllib.parse import urlparse
 import httpx
 from mcp.server.fastmcp import Context
 
-from revit_mcp.pairing import authorization_headers
-
 
 # pyRevit allocates Routes ports starting at this configured port and increments
 # for additional Revit processes. Keep the scan bounded to local Routes ports,
@@ -645,7 +643,6 @@ async def discover_snapshot(
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT),
         trust_env=False,
-        headers=authorization_headers(),
     ) as active_client:
         return await run(active_client)
 

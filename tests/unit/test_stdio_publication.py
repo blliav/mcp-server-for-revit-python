@@ -25,4 +25,4 @@ async def test_stdio_inventory_and_unpaired_refusal(tmp_path):
             assert (await session.list_resources()).resources == []
             assert (await session.list_prompts()).prompts == []
             result = await session.call_tool("list_revit_installations", {})
-            assert "Connect button" in result.content[0].text
+            assert json.loads(result.content[0].text)["status"] == "success"

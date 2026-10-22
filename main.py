@@ -6,8 +6,6 @@ import anyio
 from mcp.server.fastmcp import FastMCP, Image, Context
 import base64
 from typing import Optional, Dict, Any, Union
-from revit_mcp.pairing import authorization_headers
-from tools.http_security import PairingMiddleware
 
 from tools.instance_router import (
     DISCOVERY_HOST,
@@ -102,7 +100,7 @@ async def revit_image(
     try:
         resolved_instance = await resolve_instance(instance)
         await _log_routing(ctx, resolved_instance)
-        async with httpx.AsyncClient(timeout=60.0, trust_env=False, headers=authorization_headers()) as client:
+        async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
             response = await client.get(_request_url(resolved_instance.base_url, endpoint))
 
             if response.status_code == 200:
@@ -138,7 +136,7 @@ async def _revit_call(
     try:
         resolved_instance = await resolve_instance(instance)
         await _log_routing(ctx, resolved_instance)
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False, headers=authorization_headers()) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             url = _request_url(resolved_instance.base_url, endpoint)
 
             if method == "GET":
@@ -187,7 +185,7 @@ async def _launch_revit_get(
         endpoint,
     )
     try:
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False, headers=authorization_headers()) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             response = await client.get(url, params=kwargs.get("params"))
             if response.status_code == 200:
                 return response.json()
@@ -214,7 +212,6 @@ def build_http_app(transport):
         http_app = mcp.streamable_http_app()
         if transport == "combined":
             http_app.routes.extend(mcp.sse_app().routes)
-    http_app.add_middleware(PairingMiddleware)
     return http_app
 
 

@@ -2,7 +2,6 @@
 """Authentication and in-Revit review for bridge requests."""
 import json
 from pyrevit import routes
-from .pairing import validate_request
 
 # Advanced-user opt-out, set in %APPDATA%\pyRevit\pyRevit_config.ini:
 #   [mcp-server-for-revit-python.extension]
@@ -42,10 +41,7 @@ def authorize_request(request, action=None):
     if isinstance(request.data, dict) and "callbackUrl" in request.data:
         request.data.pop("callbackUrl", None)
         return routes.make_response(data={"error": "Callbacks are not supported."}, status=400)
-    if not validate_request(request.headers):
-        return routes.make_response(data={"error": "Bridge is disconnected or pairing is invalid."}, status=401)
-    # skip_review only removes the dialog below; callbackUrl rejection and the
-    # pairing check above always run.
+    # skip_review only removes the dialog below; callbackUrl rejection always runs.
     if action and not review_skipped():
         from pyrevit import forms
         try:
