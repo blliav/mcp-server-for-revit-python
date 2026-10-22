@@ -725,3 +725,39 @@ The modular architecture provides several extension points:
 - Log errors appropriately for debugging
 
 This modular approach ensures the codebase remains organized and maintainable while making it easy to add new functionality for specific use cases.
+
+---
+
+## **Field Notes: `execute_code` Behaviour (from live use)** |
+
+Observations from running live Revit API probes through `/execute_code/`. Keep
+them in mind when changing `revit_mcp/code_execution.py` or writing prompts
+that use the tool.
+
+### **`print` is a statement, not the injected lambda**
+The namespace injects a `print` lambda into `exec`'s globals, but IronPython 2
+treats `print(...)` as the print *statement*, so the lambda is never reached
+and multi-argument prints emit tuple reprs: `print("a", 1)` outputs
+`('a', 1)`. Probe code works around it with
+`from __future__ import print_function` as the first line (verified working -
+makes the injected lambda reachable) or by printing single pre-formatted
+strings. A server-side fix would be prepending that future import to the code
+before `exec`.
+
+### **No automatic transaction**
+This document and the README state that execute_code "handles transactions
+automatically"; the route does not open one, and the `use_transaction` field
+documented in the route docstring is never read from the payload. All
+model-modifying code must open its own `DB.Transaction` (probing clients
+prefer `RollBack()` over `Commit()`).
+
+### **The error payload is the debug surface**
+On failure the route returns `error`, `error_type`, `traceback`,
+`code_attempted`, plus `partial_output` (prints emitted before the exception)
+and `hints`. Clients rely on this: they print findings early so
+`partial_output` stays useful, and keep output bounded because MCP clients
+truncate large responses. Hint coverage currently handles AttributeError on
+`Name`, NoneType access, and missing transactions. Candidate additions from
+observed failures: `TypeError: expected str, got BuiltInParameter`
+(`LookupParameter` takes a string; built-ins go through
+`element.get_Parameter(...)`) and the print-tuple confusion above.

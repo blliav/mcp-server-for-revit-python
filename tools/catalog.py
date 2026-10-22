@@ -1,6 +1,7 @@
 """Public descriptions shared by the MCP runtime and Autodesk manifest."""
 
 TOOL_DESCRIPTIONS = {
+    "list_revit_instances": "Lists running local Revit instances with their stable selectors (A = port 48884, B = 48885, ...), Revit version and active document.",
     "get_revit_status": "Reads bridge health and active document availability.",
     "get_revit_model_info": "Reads project metadata, element counts, rooms, views, sheets, warnings and linked-model information.",
     "list_levels": "Lists model levels and their elevations.",

@@ -68,6 +68,10 @@
       "description": "Lists installed Revit versions and their executable locations."
     },
     {
+      "name": "list_revit_instances",
+      "description": "Lists running local Revit instances with their stable selectors (A = port 48884, B = 48885, ...), Revit version and active document."
+    },
+    {
       "name": "list_revit_views",
       "description": "Lists exportable model views grouped by view type."
     },

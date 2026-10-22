@@ -9,6 +9,14 @@ from typing import Optional, Dict, Any, Union
 from revit_mcp.pairing import authorization_headers
 from tools.http_security import PairingMiddleware
 
+from tools.instance_router import (
+    DISCOVERY_HOST,
+    DISCOVERY_PORT_START,
+    InstanceRoutingError,
+    REVIT_MCP_PREFIX,
+    resolve_instance,
+)
+
 # Create a generic MCP server for interacting with Revit
 # Use stateless_http=True and json_response=True for better compatibility
 mcp = FastMCP(
@@ -32,58 +40,168 @@ URL_HOST = "[::1]" if REVIT_HOST == "::1" else REVIT_HOST
 BASE_URL = f"http://{URL_HOST}:{REVIT_PORT}/revit_mcp"
 
 
-async def revit_get(endpoint: str, ctx: Context = None, **kwargs) -> Union[Dict, str]:
-    """Simple GET request to Revit API"""
-    return await _revit_call("GET", endpoint, ctx=ctx, **kwargs)
-
-
-async def revit_post(endpoint: str, data: Dict[str, Any], ctx: Context = None, **kwargs) -> Union[Dict, str]:
-    """Simple POST request to Revit API"""
-    return await _revit_call("POST", endpoint, data=data, ctx=ctx, **kwargs)
-
-
-async def revit_image(endpoint: str, ctx: Context = None) -> Union[Image, str]:
-    """GET request that returns an Image object"""
+async def _log_routing(ctx: Context, resolved_instance) -> None:
+    """Send target visibility to MCP clients without changing tool results."""
+    if not ctx:
+        return
+    info = getattr(ctx, "info", None)
+    if not info:
+        return
     try:
+        await info(
+            "Routing request to Revit {} / {} (port {}, {}, document '{}').".format(
+                resolved_instance.selector,
+                resolved_instance.numeric_alias,
+                resolved_instance.port,
+                resolved_instance.revit_version,
+                resolved_instance.document_title,
+            )
+        )
+    except Exception:
+        # Logging must never turn a valid Revit request into a tool failure.
+        pass
+
+
+def _target_error(message: str, resolved_instance) -> str:
+    """Annotate transport failures with the exact resolved target."""
+    return "{} (Revit {} on port {})".format(
+        message, resolved_instance.selector, resolved_instance.port
+    )
+
+
+def _request_url(base_url: str, endpoint: str) -> str:
+    path = endpoint if endpoint.startswith("/") else "/" + endpoint
+    return "{}{}".format(base_url.rstrip("/"), path)
+
+
+async def revit_get(
+    endpoint: str, ctx: Context = None, instance: str = None, **kwargs
+) -> Union[Dict, str]:
+    """Make a request-scoped GET request to one Revit Routes instance."""
+    return await _revit_call("GET", endpoint, ctx=ctx, instance=instance, **kwargs)
+
+
+async def revit_post(
+    endpoint: str,
+    data: Dict[str, Any],
+    ctx: Context = None,
+    instance: str = None,
+    **kwargs
+) -> Union[Dict, str]:
+    """Make a request-scoped POST request to one Revit Routes instance."""
+    return await _revit_call(
+        "POST", endpoint, data=data, ctx=ctx, instance=instance, **kwargs
+    )
+
+
+async def revit_image(
+    endpoint: str, ctx: Context = None, instance: str = None
+) -> Union[Image, str]:
+    """GET request that returns an Image object from one Revit instance."""
+    resolved_instance = None
+    try:
+        resolved_instance = await resolve_instance(instance)
+        await _log_routing(ctx, resolved_instance)
         async with httpx.AsyncClient(timeout=60.0, trust_env=False, headers=authorization_headers()) as client:
-            response = await client.get(f"{BASE_URL}{endpoint}")
-            
+            response = await client.get(_request_url(resolved_instance.base_url, endpoint))
+
             if response.status_code == 200:
                 data = response.json()
                 image_bytes = base64.b64decode(data["image_data"])
                 return Image(data=image_bytes, format="png")
-            else:
-                return f"Error: {response.status_code} - {response.text}"
+            return _target_error(
+                "Error: {} - {}".format(response.status_code, response.text),
+                resolved_instance,
+            )
+    except InstanceRoutingError as exc:
+        return "Error: {}".format(exc)
     except httpx.TimeoutException:
-        return "Error: Image export timed out after 60 seconds."
+        message = "Error: Image export timed out after 60 seconds."
+        return _target_error(message, resolved_instance) if resolved_instance else message
     except Exception as e:
         msg = str(e) or type(e).__name__
-        return f"Error: {msg}"
+        message = "Error: {}".format(msg)
+        return _target_error(message, resolved_instance) if resolved_instance else message
 
 
-async def _revit_call(method: str, endpoint: str, data: Dict = None, ctx: Context = None,
-                     timeout: float = 30.0, params: Dict = None) -> Union[Dict, str]:
-    """Internal function handling all HTTP calls"""
+async def _revit_call(
+    method: str,
+    endpoint: str,
+    data: Dict = None,
+    ctx: Context = None,
+    timeout: float = 30.0,
+    params: Dict = None,
+    instance: str = None,
+) -> Union[Dict, str]:
+    """Resolve one target and handle a single complete HTTP request."""
+    resolved_instance = None
     try:
+        resolved_instance = await resolve_instance(instance)
+        await _log_routing(ctx, resolved_instance)
         async with httpx.AsyncClient(timeout=timeout, trust_env=False, headers=authorization_headers()) as client:
-            url = f"{BASE_URL}{endpoint}"
+            url = _request_url(resolved_instance.base_url, endpoint)
 
             if method == "GET":
                 response = await client.get(url, params=params)
             else:  # POST
-                response = await client.post(url, json=data, headers={"Content-Type": "application/json"})
+                response = await client.post(
+                    url,
+                    json=data,
+                    headers={"Content-Type": "application/json"},
+                )
 
-            return response.json() if response.status_code == 200 else f"Error: {response.status_code} - {response.text}"
+            if response.status_code == 200:
+                return response.json()
+            return _target_error(
+                "Error: {} - {}".format(response.status_code, response.text),
+                resolved_instance,
+            )
+    except InstanceRoutingError as exc:
+        return "Error: {}".format(exc)
     except httpx.TimeoutException:
-        return f"Error: Request timed out after {timeout} seconds. The operation may still be running in Revit."
+        message = (
+            "Error: Request timed out after {} seconds. "
+            "The operation may still be running in Revit.".format(timeout)
+        )
+        return _target_error(message, resolved_instance) if resolved_instance else message
     except Exception as e:
         msg = str(e) or type(e).__name__
-        return f"Error: {msg}"
+        message = "Error: {}".format(msg)
+        return _target_error(message, resolved_instance) if resolved_instance else message
+
+
+async def _launch_revit_get(
+    endpoint: str, ctx: Context = None, **kwargs
+) -> Union[Dict, str]:
+    """Poll the legacy bootstrap port for the MCP-local launch tool.
+
+    ``launch_revit`` is deliberately outside request-scoped instance routing:
+    it only needs to detect that the Routes service started after spawning a
+    process. All normal Revit-facing tools continue through ``revit_get``.
+    """
+    timeout = kwargs.get("timeout", 30.0)
+    url = _request_url(
+        "http://{}:{}{}".format(
+            DISCOVERY_HOST, DISCOVERY_PORT_START, REVIT_MCP_PREFIX
+        ),
+        endpoint,
+    )
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, headers=authorization_headers()) as client:
+            response = await client.get(url, params=kwargs.get("params"))
+            if response.status_code == 200:
+                return response.json()
+            return "Error: {} - {}".format(response.status_code, response.text)
+    except httpx.TimeoutException:
+        return "Error: Request timed out after {} seconds.".format(timeout)
+    except Exception as e:
+        msg = str(e) or type(e).__name__
+        return "Error: {}".format(msg)
 
 
 # Register all tools BEFORE the main block
 from tools import register_tools
-register_tools(mcp, revit_get, revit_post, revit_image)
+register_tools(mcp, revit_get, revit_post, revit_image, _launch_revit_get)
 
 
 def build_http_app(transport):

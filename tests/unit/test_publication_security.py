@@ -148,6 +148,9 @@ async def test_revit_http_client_has_auth_and_ignores_proxies(paired_user, monke
     observed = []
     def handler(request):
         observed.append(request)
+        # One Revit on the first Routes port; instance discovery probes the rest.
+        if request.url.port != 48884:
+            raise httpx.ConnectError("refused", request=request)
         return httpx.Response(200, json={"status": "active"})
     def client(**kwargs):
         assert kwargs["trust_env"] is False

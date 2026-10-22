@@ -28,6 +28,12 @@ class TestStatusTools:
         await self.tools["get_revit_model_info"](ctx=None)
         self.mock_get.assert_called_once_with("/model_info/", None)
 
+    async def test_status_forwards_explicit_instance(self):
+        await self.tools["get_revit_status"](ctx=None, instance="B")
+        self.mock_get.assert_called_once_with(
+            "/status/", None, timeout=10.0, instance="B"
+        )
+
 
 # ---- Model tools ----
 
@@ -67,6 +73,14 @@ class TestViewTools:
     async def test_get_revit_view(self):
         await self.tools["get_revit_view"](view_name="Level 1", ctx=None)
         self.mock_image.assert_called_once_with("/get_view/Level 1", None)
+
+    async def test_get_revit_view_forwards_explicit_instance(self):
+        await self.tools["get_revit_view"](
+            view_name="Level 1", ctx=None, instance="A"
+        )
+        self.mock_image.assert_called_once_with(
+            "/get_view/Level 1", None, instance="A"
+        )
 
     async def test_get_current_view_info(self):
         await self.tools["get_current_view_info"](ctx=None)
@@ -216,6 +230,18 @@ class TestCodeExecutionTools:
         )
         call_data = self.mock_post.call_args[0][1]
         assert call_data["description"] == "Set x"
+
+    async def test_execute_code_forwards_explicit_instance(self):
+        await self.tools["execute_revit_code"](
+            code="print(1)", ctx=None, instance="B"
+        )
+        self.mock_post.assert_called_once_with(
+            "/execute_code/",
+            {"code": "print(1)", "description": "Code execution"},
+            None,
+            timeout=60.0,
+            instance="B",
+        )
 
     async def test_execute_code_connection_error(self):
         self.mock_post.side_effect = ConnectionError("refused")

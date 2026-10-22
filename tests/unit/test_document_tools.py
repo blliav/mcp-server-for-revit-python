@@ -39,6 +39,18 @@ class TestOpenDocument:
         call_data = mock_revit_post.call_args[0][1]
         assert call_data["audit"] is True
 
+    async def test_open_forwards_explicit_instance(self, doc_tools, mock_revit_post):
+        await doc_tools["open_document"](
+            ctx=None, file_path="C:/test.rvt", instance="A"
+        )
+        mock_revit_post.assert_called_once_with(
+            "/open_document/",
+            {"file_path": "C:/test.rvt", "detach": False, "audit": False},
+            None,
+            timeout=120.0,
+            instance="A",
+        )
+
 
 class TestCloseDocument:
     async def test_close_default_no_save(self, doc_tools, mock_revit_post):
