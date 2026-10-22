@@ -8,6 +8,7 @@ import anyio
 from typing import Optional
 from mcp.server.fastmcp import Context
 from .utils import format_response
+from .instance_router import discover_snapshot
 
 
 def _find_revit_installations():
@@ -146,6 +147,45 @@ async def _wait_for_revit_ready(revit_get, ctx, timeout, poll_interval=5):
     return False, None
 
 
+async def _running_ports(discover=None):
+    """Return the Routes ports of the Revit instances answering right now."""
+    try:
+        snapshot = await (discover or discover_snapshot)()
+    except Exception:
+        return set()
+    return {instance.port for instance in snapshot.instances}
+
+
+async def _wait_for_new_instance(ctx, timeout, known_ports, discover=None,
+                                 poll_interval=5):
+    """Wait until a Revit instance appears on a port that was not running before.
+
+    Another Revit may already answer on 48884 (instance A), so readiness is
+    judged by a new Routes port showing up, which is the launched Revit.
+    Returns (True, ResolvedInstance) or (False, None) on timeout.
+    """
+    import time
+
+    start = time.time()
+    while time.time() - start < timeout:
+        if ctx:
+            await ctx.info(
+                "Waiting for the new Revit to be ready... ({}s / {}s)".format(
+                    int(time.time() - start), timeout
+                )
+            )
+        try:
+            snapshot = await (discover or discover_snapshot)()
+            new = [item for item in snapshot.instances if item.port not in known_ports]
+            if new:
+                return True, min(new, key=lambda item: item.port)
+        except Exception:
+            pass
+        await anyio.sleep(poll_interval)
+
+    return False, None
+
+
 def register_launch_tools(mcp, revit_get, readiness_get=None):
     """Register Revit launch and discovery tools with the MCP server."""
 
@@ -264,6 +304,9 @@ def register_launch_tools(mcp, revit_get, readiness_get=None):
                 indent=2,
             )
 
+        # Remember which instances already run, so the new one can be told apart.
+        known_ports = await _running_ports()
+
         # Build and launch
         cmd = _build_launch_command(
             selected["path"], file_path, language
@@ -288,10 +331,8 @@ def register_launch_tools(mcp, revit_get, readiness_get=None):
                 )
             )
 
-        # Poll for readiness
-        ready, status_response = await _wait_for_revit_ready(
-            readiness_get or revit_get, ctx, timeout
-        )
+        # Poll for readiness of the newly launched instance
+        ready, new_instance = await _wait_for_new_instance(ctx, timeout, known_ports)
 
         result = {
             "status": "success",
@@ -302,13 +343,17 @@ def register_launch_tools(mcp, revit_get, readiness_get=None):
         }
 
         if ready:
+            result["instance"] = new_instance.selector
+            result["port"] = new_instance.port
+            result["document_title"] = new_instance.document_title
             result["message"] = (
-                "Revit {} is running and pyRevit Routes is active.".format(
-                    selected["year"]
+                "Revit {} is running as instance {} (port {}). Pass "
+                "instance=\"{}\" to Revit tools to work in it.".format(
+                    selected["year"], new_instance.selector,
+                    new_instance.port, new_instance.selector
                 )
             )
-            if status_response:
-                result["revit_status"] = status_response
+            result["revit_status"] = dict(new_instance.status)
         else:
             result["message"] = (
                 "Revit {} was launched but did not respond within {} seconds. "

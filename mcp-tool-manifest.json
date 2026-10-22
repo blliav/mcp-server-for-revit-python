@@ -45,7 +45,7 @@
     },
     {
       "name": "launch_revit",
-      "description": "Starts an installed Revit version, optionally opens a model file, and checks bridge readiness."
+      "description": "Starts an installed Revit version, optionally opens a model file, waits for the new instance and returns its selector (A, B, ...)."
     },
     {
       "name": "list_category_parameters",

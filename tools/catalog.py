@@ -17,7 +17,7 @@ TOOL_DESCRIPTIONS = {
     "list_category_parameters": "Lists element parameters and sample values for a category.",
     "execute_revit_code": "Executes supplied IronPython code in Revit with the Windows user's permissions after review in Revit; code can access model data, files and network services.",
     "list_revit_installations": "Lists installed Revit versions and their executable locations.",
-    "launch_revit": "Starts an installed Revit version, optionally opens a model file, and checks bridge readiness.",
+    "launch_revit": "Starts an installed Revit version, optionally opens a model file, waits for the new instance and returns its selector (A, B, ...).",
     "open_document": "Opens a specified Revit document, optionally auditing or detaching it from central.",
     "close_document": "Closes the active Revit document, optionally saving changes.",
     "save_document": "Saves the active document in place or to a specified new file.",
