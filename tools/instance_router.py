@@ -32,6 +32,9 @@ CONNECT_TIMEOUT = 0.1
 SISTERS_ENDPOINT = "/routes/sisters"
 STATUS_ENDPOINT = "/revit_mcp/status/"
 REVIT_MCP_PREFIX = "/revit_mcp"
+# Health of a Revit process whose Routes server answers but has no open model.
+NO_DOCUMENT_HEALTH = "no_document"
+NO_DOCUMENT_ERROR = "no active revit document"
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 _SELECTOR_PREFIX = re.compile(r"^revit\s*", re.IGNORECASE)
@@ -71,8 +74,9 @@ class ResolvedInstance:
             "numeric_alias": self.numeric_alias,
             "port": self.port,
             "base_url": self.base_url,
-            "healthy": True,
+            "healthy": self.health == "healthy",
             "health": self.health,
+            "has_document": self.health != NO_DOCUMENT_HEALTH,
             "document_title": self.document_title,
             "revit_version": self.revit_version,
             "status": dict(self.status),
@@ -376,6 +380,17 @@ def _is_healthy_status(status_code: int, payload: Mapping[str, Any]) -> bool:
     )
 
 
+def _is_no_document_status(status_code: int, payload: Mapping[str, Any]) -> bool:
+    """Recognize the 503 that revit_mcp/status.py returns when no model is open.
+
+    Such a Revit process is running and routable (for example for
+    open_document), so discovery lists it instead of rejecting it.
+    """
+    if status_code != 503 or payload.get("revit_available") is not False:
+        return False
+    return NO_DOCUMENT_ERROR in str(payload.get("error", "")).lower()
+
+
 def _document_title(status: Mapping[str, Any]) -> str:
     title = status.get("document_title")
     if title:
@@ -456,6 +471,9 @@ async def _fetch_status(
         )
 
     status_code = getattr(response, "status_code", None)
+    if _is_no_document_status(status_code, payload):
+        payload["health"] = NO_DOCUMENT_HEALTH
+        return port, payload, None
     if not _is_healthy_status(status_code, payload):
         return port, None, "unhealthy: HTTP {}".format(status_code)
     return port, payload, None
