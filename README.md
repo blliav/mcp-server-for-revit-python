@@ -2,6 +2,32 @@
 
 ## A pyRevit-oriented implementation of the Model Context Protocol (MCP) for Autodesk Revit
 
+## About this fork
+
+This is a fork of
+[mcp-servers-for-revit/mcp-server-for-revit-python](https://github.com/mcp-servers-for-revit/mcp-server-for-revit-python)
+with three changes:
+
+- **Multiple Revit instances** (from
+  [virgilinojuca's fork](https://github.com/virgilinojuca/mcp-server-for-revit-python)):
+  each Revit is labelled by its pyRevit Routes port, 48884 = `A`, 48885 = `B`, and so on.
+  Call `list_revit_instances`, then pass `instance="A"` / `"B"` to any tool. With several
+  Revits open the server refuses to guess. A Revit with no open model is listed with
+  `"has_document": false`.
+- **No pairing and no MCP ribbon tab.** pyRevit Routes does not pass HTTP headers to the
+  extension (upstream issues #71/#73), so upstream's pairing always fails with 401. Like
+  the extension before pairing was added, any program on this PC can call the local
+  Routes ports. The pairing, Connect and Disconnect text below does not apply.
+- **Optional `skip_review`**: to turn off the Yes/No review dialog in Revit, add this to
+  `%APPDATA%\pyRevit\pyRevit_config.ini` (read on every request, default off):
+
+  ```ini
+  [mcp-server-for-revit-python.extension]
+  skip_review = true
+  ```
+
+  With it on, model changes and unsandboxed Python run without confirmation.
+
 ## Local pairing and Autodesk Marketplace publication
 
 This project is being prepared for Autodesk Marketplace review; it is not yet certified.
@@ -162,7 +188,7 @@ pyRevit will start listening on port `http://localhost:48884/`
 
 1. Clone the repo in a custom location:
     ```bash
-    git clone https://github.com/mcp-servers-for-revit/mcp-server-for-revit-python
+    git clone https://github.com/blliav/mcp-server-for-revit-python
     ```
 2. Add `.extension` to the root folder name
 3. In Revit, navigate to the pyRevit tab
